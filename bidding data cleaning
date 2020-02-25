@@ -1,0 +1,51 @@
+from azure.storage.file import FileService
+
+endpointSuffix = "core.chinacloudapi.cn"
+accountName='storageest'
+accountKey='69OmWOLQd2zpZHct+utQ6WYmM7iv4nQwtYAeLsLESaFjqTrHS1tfSP6Uc8Ae5mKslhtN+6ti0BF2wTwHHnZ0hQ=='
+
+file_service = FileService(account_name=accountName, account_key=accountKey,endpoint_suffix=endpointSuffix)
+file_service.get_file_to_path('myshare','ND','main.py','main.py')
+
+%run main.py
+
+with open(r'C:\Users\jiyan\Desktop\二月第二周中标数据.csv','r',encoding='utf-8') as f:#使用时更新文件地址
+    dfB = pd.read_csv(f)  # 待合并文件1
+
+dfB['发布时间'] = pd.to_datetime(dfB['发布时间'])
+dfB.loc[dfB['地区']=='内蒙','地区'] = '内蒙古'
+indexmax = getmaxindex()
+indexadd = len(dfB)
+addindex = range((indexmax + 1), int(indexmax + indexadd + 1))
+
+dfB['索引'] = addindex
+if '商品名' not in dfB.columns:
+    dfB['商品名'] = np.nan
+
+dfB = dfB[['价格','商品名','剂型', '单位', '发布时间', '地区', '文件名','生产企业', '索引', '规格', '转换比', '通用名', '项目名称','价格状态']]
+dfB['价格']=dfB['价格'].apply(tofloat)
+dfB['转换比']=dfB['转换比'].apply(toint)
+dfB = 药品信息清洗(药品名称清洗(企业名称清洗(dfB)))
+dfB['flag']=dfB['flag'].apply(toint)
+dfB = 转换比清洗(dfB)
+dfB = 单位价格清洗(dfB)
+dfB =清洗异常价格(dfB)
+dfB =补充缺失价格(dfB)
+dfB['失效时间'] = pd.to_datetime('2020-12-31')#填充失效时间
+len(dfB)
+dfout = dfB.loc[dfB['索引']>indexmax]
+dfout = dfout.drop('商品名', axis=1, errors='ignore')
+dfout = dfout.rename(columns={'成分名':'活性成分','通用名N':'成分名','商品名N':'商品名'})
+dfout['发布时间']= dfout['发布时间'].apply(lambda x: x.strftime("%Y-%m-%d %H:%M:%S"))
+dfout['失效时间']= pd.to_datetime(dfout['失效时间'])
+dfout['失效时间']= dfout['失效时间'].apply(lambda x: x.strftime("%Y-%m-%d %H:%M:%S"))
+
+#生产网页版更新所用的excel文件
+dfout.to_excel(r'C:\Users\jiyan\Documents\工作\中标数据\2020-2\数据更新2月14.xlsx',index=False)#更新网页版中标,使用时更新文件保持地址
+# 写入在线的中标数据库,使用时取消下面行的注释.谨慎使用
+# dfB.loc[dfB['索引']>getmaxindex()].to_sql(name='中标数据new', con=engine_azure, schema='TEST', if_exists='append', index=False,chunksize=50,method='multi')#一次插入50条数据
+
+
+
+
+
