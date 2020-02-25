@@ -1,0 +1,964 @@
+import pandas as pd
+import numpy as np
+import re
+import heapq
+import Levenshtein as le
+from datetime import timedelta
+from tqdm import tqdm
+import pyodbc
+from sqlalchemy import create_engine
+from sqlalchemy.types import NVARCHAR, Float, Integer
+import urllib
+from math import log 
+
+params = urllib.parse.quote_plus(r'Driver={ODBC Driver 17 for SQL Server};Server=tcp:pharmbi.database.chinacloudapi.cn,1433;Database=pharmbi;Uid=linjiyan;Pwd=Huaniujiayou123;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=120;')
+conn_str = 'mssql+pyodbc:///?odbc_connect={}'.format(params)
+engine_azure = create_engine(conn_str,echo=True)
+print('connection is ok')
+
+
+
+params = {'省': '', '市': '', 'Laboratoire': '', 'laboratoire': '', '股份': '', '有限公司': '', '有限责任公司': '', '经济特区': '', '广西壮族自治区': '广西', '西藏自治区': '西藏'
+    , '宁夏回族自治区': '宁夏', '内蒙古自治区': '内蒙古', '新疆维吾尔自治区': '新疆', '阿坝藏族羌族自治区': '阿坝','有限':'',
+          '生产企业': '', '委托方': '', '葯': '药', '：': ':', '〇': '0', '零': '0', '一': '1', '二': '2', '三': '3', '四': '4',
+          '五': '5', '六': '6', '七': '7', '八': '8', '九': '9', '会社': ''}  # 企业名称清洗预处理字典
+params1 = {"０": "0", "１": "1", "２": "2", "３": "3", "﹪":"%",
+           "４": "4", "５": "5", "６": "6", "７": "7", "８": "8", "９": "9",
+           "Ａ": "A", "Ｂ": "B", "Ｃ": "C", "Ｄ": "D", "Ｅ": "E", "Ｆ": "F", "Ｇ": "G",
+           "Ｈ": "H", "Ｉ": "I", "Ｊ": "J", "Ｋ": "K", "Ｌ": "L", "Ｍ": "M", "Ｎ": "N",
+           "Ｏ": "O", "Ｐ": "P", "Ｑ": "Q", "Ｒ": "R", "Ｓ": "S", "Ｔ": "T", "Ｕ": "U",
+           "Ｖ": "V", "Ｗ": "W", "Ｘ": "X", "Ｙ": "Y", "Ｚ": "Z", "ａ": "a",
+           "ｂ": "b", "ｃ": "c", "ｄ": "d", "ｅ": "e", "ｆ": "f", "．":".",
+           "ｇ": "g", "ｈ": "h", "ｉ": "i", "ｊ": "j", "ｋ": "k", "ｌ": "l",
+           "ｍ": "m", "ｎ": "n", "ｏ": "o", "ｐ": "p", "ｑ": "q", "ｒ": "r", "ｓ": "s",
+           "ｔ": "t", "ｕ": "u", "ｖ": "v", "ｗ": "w", "ｘ": "x", "ｙ": "y", "ｚ": "z",
+           "国际": "",'×':'*','x':'*','^':'','10E':'10','au':'iu'}
+
+params2 = {
+    ' ':'',
+    '毫': 'm',
+    '升': 'l',
+    '克': 'g',
+    'axa': '',
+    '抗': '',
+    '单位': 'u',
+    '微': 'u',
+    'μ': 'u',
+    'y': 'ug',
+    'mcg':'ug',
+    'i':'',
+    '*106':'十的六',
+    '*107':'十的七',
+    '*108':'十的八',
+    '*109':'十的九',
+    '厘米':'cm',
+    '毫米':'mm'
+}
+params3 ={'下','丸','丹','乳','他','体','入','其','养','内','冲','冻','凝','分','包','双','口','合','含','吸',
+          '咀', '喷', '嚼', '囊', '外', '大', '容', '射', '小', '尿', '层', '崩', '巴', '布', '干', '微', '悬',
+          '控', '搽', '撒', '放', '散', '敷', '曲', '服', '析', '栓', '棒', '植', '橡', '气', '水', '沫', '油',
+          '泡', '注', '洗', '浆', '浓', '涂', '液', '混', '湿', '溶', '滴', '漱', '灌', '热', '煎', '熨', '片',
+          '球', '用', '皮', '直', '眼', '硅', '粉', '粒', '糊', '糖', '组', '细', '缓', '缩', '耳', '肠', '肪',
+          '胀', '胶', '脂', '腔', '腹', '腾', '膏', '膜', '膨', '舌', '茶', '营', '蜜', '蜡', '装', '解', '质',
+          '贴', '软', '透', '速', '道', '酊', '酒', '醑', '释', '量', '锭', '阴', '雾', '霜', '颊', '颗', '鼻'}
+
+# 规格清洗预处理字典
+
+pat = r'[\u4e00-\u9fa5]|[a-z]|[A-Z]|[0-9]|[α-ω]'
+pat2 = r'(^中国|爱尔兰|阿根廷|澳大利亚|巴西|生产厂|列支敦士登|美国|韩国|意大利|法国|无|挪威|德国|英国|日本|西班牙|比利时|印度|加拿大' \
+       r'|希腊|荷兰|波多黎各|墨西哥|新加坡|台湾|波兰|丹麦|瑞典|瑞士|冰岛)(\S+)'
+pat3 = r'(北京科园信海医药经营|山西|内蒙古|河北|安徽|4川|湖北|云南|天津|江西|江苏|浙江|湖南|吉林|黑龙江|' \
+       r'辽宁|上海|贵州|陕西|甘肃|广东|河南|新疆|山东|海南|北京|福建|宁夏|青海|军区|广西|重庆|西藏)(\S+)'
+pat4 = r'(^\S+酸)(\S+)'
+pat5 = r'(?<=\d)\s+(?=\d)'  #数字之间的空格
+pat6 = r'(?<=\d)k(?!g)'  #处理生物制剂中的k后不带IU的情况
+
+datapat = re.compile(pat)
+datapat2 = re.compile(pat2)
+datapat3 = re.compile(pat3)
+datapat4 = re.compile(pat4)
+datapat5 = re.compile(pat5)
+datapat6 = re.compile(pat6)
+p11 = r'[0-9]+\.?[0-9]*[mu]?[gl]'
+p2 = r'[0-9](?=g)'
+p21 = r'[0-9](?=ug)'
+p22 = r'[0-9](?=ng)'
+p3 = r'[0-9]l'
+p31 = r'[0-9]+\.?[0-9]*ul'
+p12 = r'[0-9]+\.?[0-9]*[mun]?g'
+p13 = r'[0-9]+\.?[0-9]*[mu]?l'
+p14 = r'([0-9]+\.?[0-9]*)(\D*?)[i]?u(?!g)'
+p15 = r'([0-9]+\.?[0-9]*)\D*?([0-9]+\.?[0-9]*)(\D?)m(?!g|l)' #mm*mm 视为iu
+p4 = r'[0-9]+\.?[0-9]*w[i]?u'
+p5 = r'[0-9]+\.?[0-9]*(?=%)'
+p6 = r'[0-9]+\.?[0-9]+$'
+
+cn_unit = {
+    '十' : 10,
+    '拾' : 10,
+    '百' : 100,
+    '佰' : 100,
+    '千' : 1000,
+    '百万': 1000000,
+    '仟' : 1000,
+    'k':1000,
+    'm':1000000,
+    '万' : 10000,
+    '萬' : 10000,
+    '亿' : 100000000,
+    '億' : 100000000,
+    '兆' : 1000000000000,
+    '十的六':1000000,
+    '十的七':10000000,
+    '十的八':100000000,
+    '十的九':1000000000,
+}
+
+mm_unit = {
+    'm': 10,
+    'c': 1
+}
+
+def abslog(x):
+    x = float(x)
+    if x<=0:
+        x = 1e-7
+    return abs(log(x))
+
+
+def tofloat(x):
+    try:
+        return float(x)
+    except:
+        return np.nan
+
+def toint(x):
+    try:
+        return int(x)
+    except:
+        return 1
+
+def getindex(testlist):
+    a = set()
+    index = {}
+    stoplist = '医药制药股份有限公司工厂科技发展开发集团胶囊片剂口服疫苗'
+    for x in testlist:#北京
+        for i in range(0,len(x)-1):
+            if x[i:i+2] in stoplist: #去停用词
+                continue
+            index[x[i:i+2]]= index.get(x[i:i+2],a)
+            index[x[i:i+2]] = index[x[i:i+2]] | set([x])
+    return index #2Gram建立索引
+
+def gettar(a,mydict):#获取待匹配目标列表
+    tar = set()
+    for i in range(0,len(a)-1):
+        tar.update(mydict.get(a[i:i+2],set()))
+    return tar
+
+def getmaxindex():
+    db_conn =engine_azure.connect()
+    maxindex = db_conn.execute(r'SELECT TOP 1 ([索引]) FROM [TEST].[中标数据new] ORDER BY [索引] DESC')
+    a = maxindex.fetchone()[0]
+    db_conn.close()
+    return int(a)
+
+def mapping_df_types(df):
+    dtypedict = {}
+    for i, j in zip(df.columns, df.dtypes):
+        if "object" in str(j):
+            dtypedict.update({i: NVARCHAR(length=255)})
+        if "float" in str(j):
+            dtypedict.update({i: Float(precision=2, asdecimal=True)})
+        if "int" in str(j):
+            dtypedict.update({i: Integer()})
+    return dtypedict
+
+def simpleactive(test):
+    return ''.join(filter(lambda x: x not in params3,test))
+
+
+def is_odd(x):
+    t1 = set(x[0])
+    t2 = set(x[1])
+    return (len(t1&t2)/min(len(t1),len(t2)))>0.7
+
+
+def most_match(item, tar):  # 最近字符距离函数
+    def func(x):
+        return le.jaro_winkler(item, x), x
+    return max(map(func, tar),default=0)
+
+def prefix(ps, parmas):  # 预处理替换函数
+    i = str(ps)
+    i = i.lower().strip()
+    i = datapat5.sub('g',i)  #数字间的空格替换为g
+    i = datapat6.sub('kiu',i)  #k替换为kiu
+    for k, v in parmas.items():
+        i = i.replace(k, v)
+    return i
+
+
+def fmproess(x):
+    x = str(x).upper()
+    d = {'ACCUHALER': '阿库吸入器',
+ 'AMP': '安剖瓶',
+ 'BANDAGE': '绷带',
+ 'CAP': '胶囊',
+ 'CHAIN': '骨链',
+ 'COMB.PACK': '混合包',
+ 'CRM': '乳膏',
+ 'DENTAL': '牙条',
+ 'DRP': '滴剂',
+ 'EAR': '滴耳剂',
+ 'ELIX': '酏剂',
+ 'EMUL': '乳剂',
+ 'ENEMA': '灌肠剂',
+ 'EYE': '滴眼剂',
+ 'FILM': '薄膜剂',
+ 'FOAM': '泡沫剂',
+ 'FREEZE': '冻干瓶',
+ 'GARGLE': '漱剂',
+ 'GEL': '凝胶',
+ 'GRAN': '颗粒剂',
+ 'GUM': '咀嚼胶',
+ 'HANDI': '吸入器',
+ 'IMPLANT': '植入剂',
+ 'INFUSION': '输液',
+ 'IUD': '子宫内避孕器',
+ 'LIQ': '液剂',
+  'LOZ': '锭剂',
+ 'MEDICAL': '医药器械',
+ 'MIXTURE': '混液',
+ 'NAIL': '指(趾)甲胶',
+ 'NEBULES': '吸入混悬液',
+ 'OINT': '软膏',
+ 'ORAL': '口腔凝胶',
+ 'PASTILLE': '锭剂',
+ 'PENFILL': '笔芯注射剂',
+ 'PILL': '丸剂',
+ 'PLASTER': '硬膏',
+ 'PRE-FILLED': '预填充笔芯注射剂',
+ 'PWD': '散剂',
+ 'RESP': '雾化吸入剂',
+ 'ROTADISK': '吸入粉末',
+ 'SACHET': '干混悬剂',
+ 'SCALP': '头皮洗剂',
+ 'SHAMPOO': '洗发剂',
+ 'SOL': '口服液',
+ 'SPRAY': '喷雾剂',
+ 'STICKING': '粘片',
+ 'SUSP': '混悬剂',
+ 'SYR': '糖浆',
+ 'TAB': '片剂',
+ 'TEST': '试纸',
+ 'TINCT': '酊剂',
+  'TRANSDERMAL': '经皮贴剂',
+ 'TURBUHALER': '吸入器',
+ 'VAG': '阴道洗剂',
+ 'VIAL': '冻干瓶',
+ 'WINE': '保健酒'}
+    for k, v in zip(d.keys(), d.values()):
+        x = x.replace(k,v)
+    try:
+        x = set(x)
+        if x & set('西林'):
+            x = x | set('注射冻干')
+        if x & set('粉针'):
+            x = x | set('冻干')
+        if ('注' in x)&('射' in x)&('用' in x):
+            x = set('注射冻干')
+        if x & set('冻针'):
+            x = x | set('注')
+        if x & set('搽'):
+            x = x | set('外')
+        if x & set('冲'):
+            x = x | set('颗粒')
+        x = x & params3
+        return x
+    except:
+        return set()
+
+
+def myds(x, y):  # 字符距离
+    x = str(x)
+    y = str(y)
+    if x == '' and y == 'nan':
+        return 0.5
+    elif x == '' or y == 'nan':
+        return 0
+    else:
+        try:
+            return le.jaro(x, y)
+        except:
+            return 0
+
+
+def mynds(x, y):  # 数字距离
+    x = float(x)
+    y = float(y)
+    try:
+        return 1 - (abs(x - y) / (x + y))
+    except:
+        return 0
+
+
+def myn2ds(x, y):  # 数字距离2
+    x = str(x)
+    y = str(y)
+    if x == 'nan':
+        x =''
+    if y == 'nan':
+        y =''
+    if x == '' and y == '':
+        return 0
+    if x =='' and y !='':
+        return -1
+    if x !='' and y =='':
+        return -1
+    try:
+        x1 = set(x.split())
+        x1.add(str(sum(heapq.nsmallest(2,set(map(float,x1))))))
+        y1 = set(y.split())
+        y1.add(str(sum(heapq.nsmallest(2,set(map(float,y1))))))
+        x1 = set(map(float,x1))
+        y1 = set(map(float,y1))
+        if len(x1&y1):
+            return len(x1&y1)/len(x1|y1)
+        else:
+            return -0.7
+    except:
+        return -0.7
+
+
+def mydds(x, y):  # 剂型距离
+    try:
+        temp = (len(x&y)*2.5+1)/(len(x|y)+3)
+    except:
+        return 0
+    return (temp if temp <= 1 else 1)
+
+
+def mybds(x,y):
+    x = int(x)
+    y = int(y)
+    try:
+        return 1 if x==y else 0
+    except:
+        return 0
+
+
+def 规格提取(s, flag=1):
+    # flag = 1 提取全部剂型，flag =2 只提取mg，flag=3 只提取ml flag=4 只提取IU flag=5 只提取百分比
+
+    out2 = set()
+    if flag == 1:
+        out = re.findall(p11, str(s).lower())
+        for i in out:
+            if re.search(p2, i):
+                j = str(int(float(i.strip('g')) * 1000)) + 'mg'
+            elif re.search(p3, i):
+                j = str(int(float(i.strip('l')) * 1000)) + 'ml'
+            elif re.search(p21, i):
+                j = str(float(i.strip('ug')) / 1000) + 'mg'
+            else:
+                j = i
+            out2 .add(str(j))
+        return ' '.join(out2)
+    if flag == 2:
+        out = re.findall(p12, str(s).lower())
+        for i in out:
+            if re.search(p2, i):
+                j = float(i.strip('g')) * 1000  # + 'mg'
+            elif re.search(p21, i):
+                j = float(i.strip('ug')) / 1000  # + 'mg'
+            elif re.search(p22, i):
+                j = float(i.strip('ng')) / 10  # + 'mg'
+            else:
+                j = float(i.strip('mg'))
+            out2 .add(str(j))
+        return ' '.join(out2)
+    if flag == 3:
+        out = re.findall(p13, str(s).lower())
+        # print(out)
+        for i in out:
+            # print(i)
+            if re.search(p3, i):
+                j = float(i.strip('l')) * 1000  # + 'ml'
+            elif re.search(p31, i):
+                j = float(i.strip('ul')) / 1000  # + 'mg'
+            else:
+                j = float(i.strip('ml'))
+            out2 .add(str(j))
+        return ' '.join(out2)
+    if flag == 4:
+        out = re.findall(p14, str(s).lower())
+        for i in out:
+            j = float(i[0])*cn_unit.get(i[1],1)
+            out2 .add(str(j))
+        out3 = re.findall(p15, str(s).lower())  #处理mm*mm  副作用错误提取eg 1.5gm
+        for i in out3:
+            j1 = float(i[0])/mm_unit.get(i[2],1)
+            j2 = float(i[1])/mm_unit.get(i[2],1)
+            out2 .add(str(j1))
+            out2 .add(str(j2))
+        return ' '.join(out2)
+    if flag == 5:
+        out = re.findall(p5, str(s).lower())  # %
+        out3 = re.findall(p6, str(s).lower())  # 0.001
+        out4 = re.findall(p12, str(s).lower())  # 质量
+        out5 = re.findall(p13, str(s).lower())  # 体积
+        for i in out:
+            out2.add(str(float(i)))
+        for i in out3:
+            j = float(i) * 100
+            out2 .add(str(j))
+        for m in out5:  # 将mg ml转换为%比浓度
+            if re.search(p3, m):
+                k = float(m.strip('l')) * 1000  # + 'ml'
+            elif re.search(p31, m):
+                k = float(m.strip('ul')) / 1000  # + 'ml'
+            else:
+                k = float(m.strip('ml'))
+            for i in out4:
+                if re.search(p2, i):
+                    j = float(i.strip('g')) * 1000  # + 'mg'
+                elif re.search(p21, i):
+                    j = float(i.strip('ug')) / 1000  # + 'mg'
+                elif re.search(p22, i):
+                    j = float(i.strip('ng')) /10
+                else:
+                    j = float(i.strip('mg'))
+                if k:
+                    j = j / (k * 10)
+                else:
+                    j = 0
+                out2 .add(format(j, '.2f'))
+    if flag == 6:
+        out2 = re.findall(p6, str(s).lower())
+        return ' '.join(out2)
+    return ' '.join(out2)
+
+
+def 文件合并(dfA, dfB):
+    print('开始合并文件...')
+    if not set(dfB.columns).issubset(set(dfA.columns)):
+        raise NameError('dfB字段名称不规范')
+    dfA = dfA.loc[pd.isnull(dfA['通用名']) == False]
+    dfB = dfB.loc[pd.isnull(dfB['通用名']) == False]
+    dfC = pd.concat([dfA, dfB],sort=False)
+    if '索引' in dfC.columns.values:
+        indexmax = int(dfC['索引'].max())
+    else:
+        indexmax = 0
+        dfC['索引'] = np.nan
+    dfC = dfC[['价格', '剂型', '单位', '发布时间', '地区','商品名'
+               '投标企业', '文件名', '生产企业', '索引', '规格', '质量层次', '转换比', '通用名', '项目名称', '价格状态']]
+    dfC['发布时间'] = pd.to_datetime(dfC['发布时间'])
+    # dfC.loc[dfC['价格']=='null','价格'] = np.nan
+    dfC['价格'] = dfC['价格'].astype('float64')
+    indexadd = len(dfC[pd.isnull(dfC['索引'])])
+    addindex = range((indexmax + 1), int(indexmax + indexadd + 1))
+    dfC.loc[pd.isnull(dfC['索引']), '索引'] = addindex
+    print('文件合并完成')
+    return dfC
+
+
+def 企业名称匹配(dfs):
+    print('开始企业名称匹配...')
+    # print('企业名称字典为', '\n', 企业异名字典地址)
+    # dfA['异名'] = dfA[column]
+    # dfA['异名'] = dfA['异名'].apply(lambda x: ''.join(datapat.findall(str(x))))
+    # dfA['异名'] = dfA['异名'].apply(prefix, args=(params,))
+    # dfA['异名'] = dfA['异名'].apply(lambda x: datapat2.sub(r'\2\1', str(x)))
+    # dfA['异名'] = dfA['异名'].apply(lambda x: datapat3.sub(r'\2\1', str(x)))
+    # print('企业名称预处理完成')
+    魔方企业名称列表 = set(pd_datamate['异名'])
+    待匹配企业名称列表 = set(dfs)
+    药品字典输出 = {}
+    mydict =getindex(魔方企业名称列表)#建立企业名称索引
+    for key in 待匹配企业名称列表 & 魔方企业名称列表:
+        药品字典输出[key] = (1, key)
+    print('企业名称精确匹配完成')
+    print('开始企业名称模糊匹配，请耐心等待...')
+    for key in tqdm(待匹配企业名称列表 - 魔方企业名称列表):
+        药品字典输出[key] = most_match(key, gettar(key,mydict))
+    print('企业名称最佳模糊匹配完成')
+    df = pd.DataFrame(药品字典输出).T
+    df = df.reset_index()
+    df.columns = ['待匹配', '企业名称匹配度', '匹配结果']
+    #df.to_excel(待审核企业异名地址, index=False)  # 输出产品名称匹配结果
+    # print('已经企业名称匹配结果输出至：', 待审核企业异名地址)
+    # print('等待人工审核匹配结果')
+    return df
+
+
+def 企业名称清洗(dfA,column='生产企业'):
+    print('开始企业名称清洗...')
+    #print('企业名称清洗对照表为：', '\n', path)
+    dfA['生产企业'] = dfA[column].apply(str)
+    dfA['异名'] = dfA['生产企业'].apply(lambda x: ''.join(datapat.findall(str(x))))
+    dfA['异名'] = dfA['异名'].apply(prefix, args=(params,))
+    dfA['异名'] = dfA['异名'].apply(lambda x: datapat2.sub(r'\2\1', str(x)))
+    dfA['异名'] = dfA['异名'].apply(lambda x: datapat3.sub(r'\2\1', str(x)))
+    dfB = 企业名称匹配(dfA['异名'])
+    dfB = dfB.loc[dfB['企业名称匹配度'] > 0.80]
+    dfC = pd.merge(dfB, pd_datamate, left_on='匹配结果', right_on='异名')
+    dfC = dfC[['待匹配', '基础名', '企业名称匹配度','flag']]
+    dfD = pd.merge(dfA, dfC, left_on='异名', right_on='待匹配', how='left')
+    dfD = dfD.drop(['异名','待匹配'],axis=1,errors='ignore')
+    dfD['基础名'] = dfD['基础名'].fillna(dfD[column])
+    dfD = dfD.drop(['生产企业N'],axis=1,errors='ignore')
+    dfD = dfD.rename(columns={'基础名': '生产企业N'})
+    # dfD.loc[(pd.isnull(dfD['flag']))&(dfD['生产企业N'].str.contains(r'[a-z]',case=0,na=False)),'flag']=1
+    # dfD['flag'] = dfD['flag'].fillna(0)
+    print('完成企业名称清洗')
+    return dfD
+
+
+def 药品名称匹配(dfs):
+    print('开始药品名称匹配...')
+    # print('药品名称字典为', '\n', 成分名异名表地址)
+    魔方产品名称列表 = set(pd_datamate2['异名'].apply(str))
+    # dfD['通用名2'] = dfD[column].apply(str)
+    # #dfD['通用名2'] = dfD['通用名2'].apply(simpleactive)
+    # dfD['通用名2'] = dfD['通用名2'].apply(lambda x: ''.join(datapat.findall(str(x))))
+    # dfD['通用名2'] = dfD['通用名2'].apply(lambda x: datapat4.sub(r'\2\1', str(x).lower()))
+    # print('药品名称预处理完成')
+    待匹配产品名称列表 = set(dfs.apply(str))
+    药品字典输出 = {}
+    mydict =getindex(魔方产品名称列表)#建立药品名称索引
+    for key in 待匹配产品名称列表 & 魔方产品名称列表:
+        药品字典输出[key] = (1, key)
+    print('药品名称精确匹配完成')
+    print('开始药品名称模糊匹配，请耐心等待...')
+    for key in tqdm(待匹配产品名称列表 - 魔方产品名称列表):
+        药品字典输出[key] = most_match(key, gettar(key,mydict))
+    print('药品名称最佳模糊匹配完成')
+    df = pd.DataFrame(药品字典输出).T
+    df = df.reset_index()
+    df.columns = ['待匹配', '药品名称匹配度', '匹配结果']
+    # df.to_excel(待审核产品异名地址, index=False)  # 输出产品名称匹配结果
+    # print('已经产品名称匹配结果输出至：', 待审核产品异名地址)
+    # print('等待人工审核匹配结果')
+    return df
+
+
+def 药品名称清洗(dfD,column='通用名'):
+    print('开始药品名称清洗...')
+    # print('药品名称清洗对照表为：', '\n', path)
+    dfD = dfD.drop(['成分名','药品名称'], axis=1, errors='ignore')
+    dfD['通用名'] = dfD[column]
+    # dfD['通用名2'] = dfD['通用名2'].apply(str)
+    #dfD['通用名2'] = dfD['通用名2'].apply(simpleactive)
+    dfD['通用名2'] = dfD[column].apply(lambda x: ''.join(datapat.findall(str(x))))
+    dfD['通用名2'] = dfD['通用名2'].apply(lambda x: datapat4.sub(r'\2\1', str(x).lower()))
+    dfE = 药品名称匹配(dfD['通用名2'])
+    dfH = pd.merge(dfE, pd_datamate2, left_on='匹配结果', right_on='异名', how='left')
+    dfH = dfH.loc[dfH['药品名称匹配度'] > 0.75]
+    dfF = pd.merge(dfD, dfH, left_on='通用名2', right_on='待匹配', how='left')
+    dfF['成分名'] = dfF['成分名'].fillna(dfF[column])
+    dfF = dfF.drop(['待匹配', '匹配结果', '异名', '通用名2'], axis=1, errors='ignore')
+    print('完成药品名称清洗')
+    return dfF
+
+
+def 初始化药品信息全表(dfA):
+    # 企业名称匹配(dfA,'生产企业')
+    dfA = 企业名称清洗(dfA,'生产企业')
+    # 药品名称匹配(dfA,'活性成分')  # 药品名称匹配
+    # dfA = 药品名称清洗(dfA, 待审核产品异名地址,'活性成分')  # 药品名称清洗
+    return dfA
+
+
+def 药品信息清洗(dfA,band='商品名',form='剂型',strong='规格'):
+    print('开始药品信息清洗...')
+    dellist = ['剂型N', '剂型距离','药品索引', '规格距离', '通用名N']
+    dfA = dfA[list(filter(lambda x:x not in dellist,dfA.columns))]#过滤结果需要用到的字段名称
+    columns = dfA.columns #存储待清理表的列名称
+    if band not in columns:
+        dfA['商品名'] = np.nan
+    else:
+        dfA['商品名'] = dfA[band]
+    if form not in columns:
+        dfA['剂型'] = np.nan
+    else:
+        dfA['剂型'] = dfA[form]
+    if strong not in columns:
+        dfA['strong'] = np.nan
+    else:
+        dfA['规格'] = dfA[strong]
+    columns = dfA.columns #存储待清理表的列名称
+    dfA['剂型'] = dfA['剂型'].fillna(dfA['通用名'])
+    #dfA['剂型'] = dfA['剂型'].apply(lambda x: ''.join(datapat.cfindall(str(x)))) #处理剂型缺失问题
+    dfB = dfA[['通用名', '剂型', '规格', '成分名','生产企业N','商品名']]
+    dfB = dfB.drop_duplicates()
+    dfB = dfB.reset_index()
+    dfDt = pd.DataFrame(dfB['成分名'].drop_duplicates()) #成分名与自己的距离为1
+    dfDt['右'] = dfDt['成分名']
+    dfDt['距离'] = 1
+    dfDt.columns = ['左', '右', '成分名距离']
+    dfA = pd.merge(dfA,dfB).set_index('index')  #按产品建立索引
+    dfC = pd_datamate3
+    dfB['规格2'] = dfB['规格'].apply(prefix, args=(params1,))
+    dfB['规格2'] = dfB['规格2'].apply(prefix, args=(params2,))
+    dfB['规格-mg'] = dfB['规格2'].apply(规格提取, args=(2,))
+    dfB['规格-ml'] = dfB['规格2'].apply(规格提取, args=(3,))
+    dfB['规格-iu'] = dfB['规格2'].apply(规格提取, args=(4,))
+    dfB['规格-%'] = dfB['规格2'].apply(规格提取, args=(5,))
+    del dfB['规格2'] #细分规格
+    dfB['剂型t1'] = dfB['剂型'].apply(fmproess)
+    dfC['剂型t2'] = dfC['剂型'].apply(fmproess)
+    print('建立所有可能成分名组合...')
+    #读取成分名相似表
+    pd_cfmxs2 = pd_cfmxs.copy()
+    pd_cfmxs.columns = ['右','左','成分名距离']
+    dfD = pd.concat([pd_cfmxs, pd_cfmxs2],sort=False).drop_duplicates()
+    dfD = pd.concat([dfD,dfDt],sort=False)
+    dfB = pd.merge(dfB,dfD,left_on='成分名',right_on='左',how='left')
+    dfC2 = pd_cfmqy #读取企业相似表
+    dfE1 = pd.merge(dfB,dfC2,left_on=['右','生产企业N'],right_on=['成分名','标准异名'],how='left')
+    dfE1['标准名']=dfE1['标准名'].fillna(dfE1['生产企业N'])
+    dfE1 = dfE1.drop(['左','成分名_y','标准异名','生产企业N'],errors='ignore',axis=1)
+    dfD1 = pd_datamate[['基础名','关联码']].drop_duplicates().rename(columns={'基础名':'标准名'})
+    dfE1 = pd.merge(dfE1,dfD1,how='left')
+    dfA1 = pd.merge(dfC,dfC2,left_on=['成分名','生产企业N'],right_on=['成分名','标准异名'],how='left')
+    dfA1['标准名']=dfA1['标准名'].fillna(dfA1['生产企业N'])
+    dfA1 = dfA1.drop(['标准异名','生产企业N'],errors='ignore',axis=1)
+    dfA1 = pd.merge(dfA1,dfD1,how='left')
+    print('建立所有可能组合...')
+    dfG = pd.merge(dfE1,dfA1,left_on=['右','关联码'],right_on=['成分名','关联码'],how='left')
+#    dfH = dfG.loc[pd.isnull(dfG['药品索引'])==True].reset_index()[['index']] #拿到未匹配的药品
+    print('计算企业距离')
+    s1 = pd.Series(map(myds, tqdm(dfG['标准名_x']), dfG['标准名_y']), index=dfG.index) #企业距离
+#     s2 = pd.Series(map(myds, dfG['成分名_x'], dfG['成分名']), index=dfG.index) #成分名距离
+    print('计算剂型距离')
+    s3 = pd.Series(map(mydds, tqdm(dfG['剂型t1']), dfG['剂型t2']), index=dfG.index) #剂型距离
+    print('计算规格距离')
+    s4 = pd.Series(map(myn2ds, tqdm(dfG['规格-mg_x']), dfG['规格-mg_y']), index=dfG.index)#规格mg距离
+    s5 = pd.Series(map(myn2ds, tqdm(dfG['规格-ml_x']), dfG['规格-ml_y']), index=dfG.index)
+    s6 = pd.Series(map(myn2ds, tqdm(dfG['规格-iu_x']), dfG['规格-iu_y']), index=dfG.index)
+    s7 = pd.Series(map(myn2ds, tqdm(dfG['规格-%_x']), dfG['规格-%_y']), index=dfG.index)
+    print('计算通用名距离')
+    s8 = pd.Series(map(myds, tqdm(dfG['通用名_x']), dfG['通用名_y']), index=dfG.index) #通用名距离
+    print('计算商品名距离')
+    s9 = pd.Series(map(myds, tqdm(dfG['商品名_x']), dfG['商品名_y']), index=dfG.index)  # 商品名距离
+    print('选择最佳组合...')
+    dfout = pd.concat([s1, s3, s4, s5, s6, s7, s8, s9], axis=1, ignore_index=1,sort=False)
+    dfout.columns = ['企业距离', '剂型距离', '规格mg距离','规格ml距离', '规格iu距离', '规格%距离','通用名距离','商品名距离']
+    dfG = pd.concat([dfG[['index','药品索引','成分名距离','成分名']], dfout], axis=1,sort=False)
+    dfG['规格距离'] = dfG[['规格mg距离', '规格ml距离', '规格iu距离', '规格%距离']].max(axis=1) + \
+                    (dfG['规格mg距离'] * 1.2 + dfG['规格ml距离'] * 1.0 + dfG['规格iu距离'] * 1.2 + dfG['规格%距离'] * 0.9) * 0.3
+    dfG['商品名距离'] = dfG['商品名距离'].apply(lambda x: x if x > 0.8 else 0)  # 企业距离修正
+    dfG['药品名称距离'] = dfG['成分名距离']*2.0+dfG['通用名距离']*0.8 + dfG['商品名距离']*5.0
+    dfG['企业距离'] = dfG['企业距离'].apply(lambda x: x if x > 0.8 else 0) #企业距离修正
+    dfG['排序依据'] = dfG['规格距离']+dfG['药品名称距离'] + dfG['剂型距离']*1.3+dfG['企业距离']
+    dfG = dfG.sort_values(by='排序依据').groupby('index').last()
+    dfA = pd.concat([dfG[['药品索引','规格距离','剂型距离']], dfA], axis=1,sort=False)
+    dfA = pd.merge(dfA,pd_datamate3[['药品索引', '药品名称', '商品名', '通用名', '成分名', '剂型','规格','生产企业N']],on='药品索引',how='left')
+    # dfA['剂型_y'] = dfA['剂型_y'].fillna(dfA['剂型_x'])
+    # dfA['规格_y'] = dfA['规格_y'].fillna(dfA['规格_x'])
+    # dfA['通用名_y'] = dfA['通用名_y'].fillna(dfA['通用名_x'])
+    dfA['生产企业N_y'] = dfA['生产企业N_y'].fillna(dfA['生产企业N_x'])
+    dfA['成分名_y'] = dfA['成分名_y'].fillna(dfA['成分名_x'])
+    # dfA['商品名_y'] = dfA['商品名_y'].fillna(dfA['商品名_x'])
+    dfA = dfA.drop(['生产企业N_x','成分名_x','剂型t1','剂型t2'], axis=1, errors='ignore')
+    dfA = dfA.rename(columns ={'剂型_x':'剂型','成分名_y':'成分名','规格_x':'规格','规格_y':'规格N','通用名_x':'通用名','通用名_y':'通用名N','商品名_y':'商品名N','商品名_x':'商品名','剂型_y':'剂型N','生产企业N_y':'生产企业N'})
+# ---------------------以下开始处理未匹配的药品信息
+    print('处理未匹配的药品信息...')
+    dfCC = dfC[['药品名称','通用名','剂型','规格','规格-mg','规格-ml','规格-iu','规格-%','成分名','剂型t2']]
+    dfCC = dfCC.drop_duplicates(['药品名称','通用名','剂型','规格','规格-mg','规格-ml','规格-iu','规格-%','成分名'])
+    dfAA = dfA.loc[pd.isnull(dfA['药品索引'])][columns]
+    dfBB = dfAA[['通用名', '剂型', '规格', '成分名']]
+    dfBB = dfBB.drop_duplicates()
+    dfBB = dfBB.reset_index()
+    dfAA = pd.merge(dfAA,dfBB).set_index('index')  #按产品建立索引
+    dfBB['规格2'] = dfBB['规格'].apply(prefix, args=(params1,))
+    dfBB['规格2'] = dfBB['规格2'].apply(prefix, args=(params2,))
+    dfBB['规格-mg'] = dfBB['规格2'].apply(规格提取, args=(2,))
+    dfBB['规格-ml'] = dfBB['规格2'].apply(规格提取, args=(3,))
+    dfBB['规格-iu'] = dfBB['规格2'].apply(规格提取, args=(4,))
+    dfBB['规格-%'] = dfBB['规格2'].apply(规格提取, args=(5,))
+    del dfBB['规格2'] #细分规格
+    dfBB['剂型t1'] = dfBB['剂型'].apply(fmproess)
+    dfGG = pd.merge(dfBB,dfCC,on='成分名',how='left')
+    s3 = pd.Series(map(mydds, tqdm(dfGG['剂型t1']), dfGG['剂型t2']), index=dfGG.index) #剂型距离
+    s4 = pd.Series(map(myn2ds, tqdm(dfGG['规格-mg_x']), dfGG['规格-mg_y']), index=dfGG.index)#规格mg距离
+    s5 = pd.Series(map(myn2ds, tqdm(dfGG['规格-ml_x']), dfGG['规格-ml_y']), index=dfGG.index)
+    s6 = pd.Series(map(myn2ds, tqdm(dfGG['规格-iu_x']), dfGG['规格-iu_y']), index=dfGG.index)
+    s7 = pd.Series(map(myn2ds, tqdm(dfGG['规格-%_x']), dfGG['规格-%_y']), index=dfGG.index)
+    s8 = pd.Series(map(myds, tqdm(dfGG['通用名_x']), dfGG['药品名称']), index=dfGG.index) #通用名距离
+    dfout = pd.concat([s3, s4, s5, s6, s7,s8], axis=1, ignore_index=1,sort=False)
+    dfout.columns = ['剂型距离', '规格mg距离','规格ml距离', '规格iu距离', '规格%距离','通用名距离']
+    dfGG = pd.concat([dfGG[['index','药品名称','通用名_y','成分名','剂型_y','规格_y']], dfout], axis=1,sort=False)
+    dfGG['规格距离'] = dfGG[['规格mg距离', '规格ml距离', '规格iu距离', '规格%距离']].max(axis=1) +(dfGG['规格mg距离'] * 1.2 + dfGG['规格ml距离'] * 1.0 + dfGG['规格iu距离'] * 1.2 + dfGG['规格%距离'] * 0.9) * 0.3
+    dfGG['药品名称距离'] = dfGG['通用名距离']*0.8
+    dfGG['排序依据'] = dfGG['规格距离']+dfGG['药品名称距离'] + dfGG['剂型距离']*1.3
+    dfGG = dfGG.sort_values(by='排序依据').drop_duplicates('index',keep='last').set_index('index')
+    dfGG = dfGG[['药品名称','通用名_y','剂型_y','规格_y','规格距离','剂型距离']]
+    dfGG.columns = ['药品名称','通用名N','剂型N','规格N','规格距离','剂型距离']
+    dfAA = pd.merge(dfAA.reset_index(),dfGG.reset_index(),on='index',how='left')
+    dfAA['通用名N'] = dfAA['通用名N'].fillna(dfAA['成分名'])
+    #dfAA['活性成分'] = dfAA['活性成分'].fillna(dfAA['成分名'])
+    dfAA['剂型N'] = dfAA['剂型N'].fillna(dfAA['剂型'])
+    dfAA['规格N'] = dfAA['规格N'].fillna(dfA['规格'])
+    dfAA = dfAA.drop('index',axis=1,errors='ignore')
+    dfA =dfA.loc[pd.isnull(dfA['药品索引'])==False]
+    dfA = pd.concat([dfA,dfAA],axis=0,sort=False)
+    # dfA = dfA.drop('成分名',axis=1,errors='ignore')
+    return dfA
+
+
+def 转换比清洗(dfB):
+    global dfEgobal
+    dfB = dfB.drop(['转换比N','index'], axis=1, errors='ignore')
+    dfB2 = dfB[['通用名N', '剂型N', '规格N', '转换比', '价格', 'flag']].drop_duplicates()
+    dfB2['index'] = range(len(dfB2))
+    dfB = pd.merge(dfB,dfB2)#按产品建立索引
+    dfB2 = dfB2.loc[(dfB2['转换比']<1)|(dfB2['转换比']>2000)|(pd.isnull(dfB2['转换比'])==True)]
+    dfB2['转换比'] =np.nan
+    dfH = pd.merge(dfB2,dfEgobal, on=['flag', '通用名N', '剂型N', '规格N'],how='left')
+    s1 = pd.Series(map(mynds, tqdm(dfH['转换比']), dfH['转换比N']), index=dfH.index) #转换比距离
+    s2 = pd.Series(map(mynds, tqdm(dfH['价格_x']), dfH['价格_y']), index=dfH.index) #价格距离1
+    s3 = pd.Series(map(mynds, tqdm(dfH['价格_x']), dfH['单位价格']), index=dfH.index) #价格距离2
+    dfG = pd.concat([dfH[['index','转换比N']], s1,s2,s3], axis=1).fillna(0)
+    dfG['排序依据'] = dfG[[1, 2]].max(axis=1) + dfG[0] * 2
+    dfG = dfG.sort_values(by='排序依据',ascending=False).drop_duplicates('index')
+    dfB = pd.merge(dfB,dfG[['index','转换比N']],on='index',how='left')
+    dfB['转换比N'] = dfB['转换比N'].fillna(dfB['转换比'])
+    dfB = dfB.drop(['index'], axis=1, errors='ignore')
+    print('转换比清洗完成')
+    return dfB
+
+
+def 单位价格清洗(dfB):
+    print('开始单位价格清洗')
+    global dfMgobal
+    dfB = dfB.drop(['单位价格','index'], axis=1, errors='ignore')
+    dfB['单位价格'] = dfB['价格'] / dfB['转换比N']
+    dfB2 = dfB[['通用名N', '剂型N', '规格N', '转换比N','价格','单位价格','flag']].dropna().drop_duplicates()
+    dfB2['index'] = range(len(dfB2))
+    dfB = pd.merge(dfB,dfB2,how='left')#按产品建立索引
+    dfB = dfB.drop(['单位价格'], axis=1, errors='ignore')
+    dfH = pd.merge(dfB2,dfMgobal,on=['flag','剂型N','通用名N','规格N'],how='left')
+    s2 = pd.Series(map(mynds, dfH['单位价格_x'], dfH['单位价格_y']), index=dfH.index)
+    s3 = pd.Series(map(mynds, dfH['价格'], dfH['单位价格_y']), index=dfH.index)
+    dfG = pd.concat([dfH[['index','价格','单位价格_x','单位价格_y']], s2, s3], axis=1,sort=False)
+    dfG[0] = dfG[0].apply(abslog)
+    dfG[1] = dfG[1].apply(abslog)
+    dfG.loc[dfG[0]<dfG[1], '单位价格'] = dfG['单位价格_x']
+    dfG.loc[dfG[0]>=dfG[1], '单位价格'] = dfG['价格']
+    dfG = dfG.drop_duplicates('index')
+    dfB = pd.merge(dfB,dfG[['index','单位价格']],on='index',how='left')
+    dfB['单位价格'] = dfB['单位价格'].fillna(dfB['价格']/dfB['转换比N'])
+    print('开始单位价格清洗完成')
+    return dfB
+
+
+def 清洗异常价格(dfB):
+    print('寻找异常价格....')
+    global dfTgobal,dfMgobal
+    dfB = dfB.drop(['index'], axis=1, errors='ignore')
+    dfB2 = dfB[['通用名N', '剂型N', '规格N','价格','单位价格','生产企业N','flag']].drop_duplicates()
+    dfB2['index'] = range(len(dfB2))
+    dfB = pd.merge(dfB,dfB2)#按产品建立索引
+    dfH = pd.merge(dfB2, dfTgobal,on=['通用名N', '剂型N', '规格N', '生产企业N'],how='left')
+    dfH = pd.merge(dfH,dfMgobal,on=['通用名N', '剂型N', '规格N', 'flag'],how='left')
+    dfH['异常指标a'] = (dfH['单位价格_x']/dfH['价格中值']).apply(abslog)#同企业品规价格差异
+    dfH['异常指标b'] = (dfH['单位价格_x']/dfH['单位价格_y']).apply(abslog)#品规价格差异
+    dfD =dfH.loc[(dfH['异常指标a']>2)&(dfH['异常指标b']>2.2)]
+    dfD = dfD[['通用名N', '剂型N', '规格N', '价格', '生产企业N', 'flag','index']]
+    dfD = dfD.rename(columns={'index':'index2'})
+    dfD['转换比'] = np.nan
+    print(f'找到异常价格记录{len(dfD)}条')
+    print('开始清洗价格异常的记录...')
+    dfD =单位价格清洗(转换比清洗(dfD))
+    dfD = dfD[['index2','转换比N','单位价格']]
+    dfD.columns = ['index','转换比N','单位价格']
+    s = dfD.set_index('index')['转换比N']
+    dfB['转换比N'] = dfB['index'].map(s).fillna(dfB['转换比N'])#更新转换比N
+    s = dfD.set_index('index')['单位价格']
+    dfB['单位价格'] = dfB['index'].map(s).fillna(dfB['单位价格'])#更新单位价格
+    dfB = dfB.drop(['index'], axis=1, errors='ignore')
+    print('价格异常的记录清洗完成')
+    return dfB
+
+
+# def 根据异常价格清洗转换比(dfA,dfAA):
+#     print('根据异常价格清洗转换比....')
+#     dfB2 = dfA[['通用名N', '剂型N', '规格N', '转换比', '价格', '生产企业N']].drop_duplicates()
+#     dfE = dfAA[['通用名N', '剂型N', '规格N', '转换比', '生产企业N', '价格']].drop_duplicates()
+#     dfH = pd.merge(dfE.reset_index(), dfB2.reset_index(), on=['生产企业N', '通用名N', '剂型N', '规格N'])
+#     dfH = dfH.loc[(dfH['转换比_x'] != dfH['转换比_y']) & (pd.isnull(dfH['转换比_y']) == False)]
+#     dfI = dfH.set_index(['index_x', 'index_y'])
+#     s2 = pd.Series(map(mynds, dfI['价格_x'], dfI['价格_y']), index=dfI.index)
+#     dfJ = pd.concat([dfI, s2], axis=1,sort=False)
+#     print('开始寻找异常单价记录最可能的转换比')
+#     #dfK = dfJ.groupby(level=0).apply(lambda dfout: dfout.sort_values(by=0)[-1:])
+#     dfJ[0] = dfJ[0].fillna(0)  # 填充空值,保持排序正确
+#     dfK = dfJ.sort_values(by=0).groupby(level=0).last()
+#     dfL = dfK[['价格_x', '剂型N', '通用名N', '生产企业N', '规格N', '转换比_x', '转换比_y']]
+#     dfL = dfL.rename(columns={'价格_x': '价格', '转换比_x': '转换比N', '转换比_y': '转换比M'})
+#     dfK = pd.merge(dfA, dfL, how='left')
+#     dfK['转换比M'] = dfK['转换比M'].fillna(dfK['转换比N'])
+#     dfK = dfK.drop('转换比N', axis=1, errors='ignore')
+#     dfK = dfK.rename(columns={'转换比M': '转换比N'})
+#     print('修正异常转换比产品',len(dfL),'条')
+#     print('异常单价记录转换比清洗完成')
+#     return dfK
+
+
+# def 修正价格异常(dfA):
+#     print('开始修正异常的单位价格记录....')
+#     dfB = dfA[['生产企业N', '通用名N', '剂型N', '规格N', '单位价格']]
+#     dfC = dfB.groupby(['生产企业N', '通用名N', '剂型N', '规格N']).median()
+#     dfC = dfC.reset_index()
+#     dfC = dfC.rename(columns={'单位价格': '价格中值'})
+#     dfA = pd.merge(dfA, dfC, how='left')
+#     dfA['异常指标'] = dfA['单位价格'] / dfA['价格中值']
+#     print('修正异常的单位价格记录',len(dfA.loc[(dfA['异常指标'] > 5) | (dfA['异常指标'] < 0.2)]),'条')
+#     dfA.loc[(dfA['异常指标'] > 5) | (dfA['异常指标'] < 0.2), '单位价格'] = np.nan
+#     dfA = dfA.drop(['异常指标','价格中值'], axis=1, errors='ignore')
+#     return dfA
+
+
+def 补充缺失价格(dfB):
+    print('寻找缺失价格....')
+    global dfTgobal,dfMgobal
+    dfB = dfB.drop(['index'], axis=1, errors='ignore')    
+    dfB2 = dfB.loc[(dfB['单位价格']<0.01)|(pd.isnull(dfB['单位价格'])==True)][['通用名N', '剂型N', '规格N','价格','单位价格','生产企业N','flag']].drop_duplicates()
+    dfB2['index'] = range(len(dfB2))
+    dfB = pd.merge(dfB,dfB2,how='left')
+    dfH = pd.merge(dfB2, dfTgobal,on=['通用名N', '剂型N', '规格N', '生产企业N'],how='left')
+    dfH = pd.merge(dfH,dfMgobal,on=['通用名N', '剂型N', '规格N', 'flag'],how='left')
+    dfH['单位价格'] = dfH['单位价格_y'].fillna(dfH['价格中值'])
+    s = dfH.set_index('index')['单位价格']
+    dfB['单位价格'] = dfB['index'].map(s).fillna(dfB['单位价格'])#更新单位价格
+    dfB = dfB.drop(['index'], axis=1, errors='ignore')
+    print('缺失价格补充完成')
+    return dfB 
+
+
+def 其他调整(dfA):
+    print('还有一些其他调整需要完成')
+    print('调整价格状态信息')
+    # dfM = pd.read_excel(r'C:\Users\jiyan\Documents\工作\清洗表对照表\价格状态更新.xlsx')
+    # dfA = pd.merge(dfA, dfM, on='价格状态', how='left')
+    # dfA['价格状态更新'] = dfA['价格状态更新'].fillna(dfA['价格状态'])
+    # dfA = dfA.drop('价格状态', axis=1, errors='ignore')
+    # dfA = dfA.rename(columns={'价格状态更新': '价格状态'})
+    print('计算失效时间')
+    dfB = dfA[['成分名', '文件名', '项目名称', '发布时间', '地区']]
+    dfB = dfB.drop_duplicates()
+    dfC = pd.merge(dfB.reset_index(), dfB.reset_index(), on=['地区', '成分名'], how='left')
+    dfC = dfC.set_index(['index_x', 'index_y'])
+    dfC = dfC.loc[dfC['文件名_x'] != dfC['文件名_y']].loc[
+        (pd.to_datetime(dfC['发布时间_y']) - pd.to_datetime(dfC['发布时间_x'])) > timedelta(days=10)]
+    dfC = dfC.loc[~(dfC['项目名称_y'].str.contains('补') | dfC['项目名称_y'].str.contains('备'))]
+    dfC = dfC.loc[~(dfC['文件名_y'].str.contains('补') | dfC['文件名_y'].str.contains('备'))]
+    dfC = dfC.loc[dfC['项目名称_x'] != dfC['项目名称_y']]
+    dfD = dfC.reset_index()
+    dfD = dfD.groupby(['index_x', 'index_y', '成分名', '文件名_x', '项目名称_x', '发布时间_x', '地区',
+                       '文件名_y', '项目名称_y']).max().reset_index()
+    dfD = dfD.set_index(['index_x', 'index_y'])
+    dfD = dfD.sort_values(by='发布时间_y').groupby(level=0).first()
+    dfD = dfD.rename(columns={'项目名称_x': '项目名称', '发布时间_x': '发布时间', 0: '失效时间', '文件名_x': '文件名'})
+    dfD = dfD.drop(['文件名_y', '项目名称_y'], errors='ignore', axis=1)
+    dfD = dfD.rename(columns={'发布时间_y': '失效时间'})
+    dfA = dfA.drop('失效时间', axis=1, errors='ignore')
+    dfA = pd.merge(dfA, dfD, how='left')
+    dfA['失效时间'] = dfA['失效时间'].fillna('2020-12-31')
+    print('其他调整完成...等待结果输出')
+    return dfA
+
+def getdfETM(dfA):
+    '''
+    dfA为中标数据总表
+    转换比清洗用对照表dfE,发现价格异常用对照表dfM,清洗单位价格对照表T
+    '''
+    dfB = dfA[['flag','剂型N','通用名N','规格N','转换比N']]
+    dfC = dfB.groupby(['通用名N', '剂型N', '规格N', '转换比N', 'flag']).apply(lambda dfout: len(dfout)).reset_index()
+    dfC = dfC.rename(columns={0: '企业通用名N转换比数'})
+    dfC2 = dfB.groupby(['通用名N', '剂型N', '转换比N']).apply(lambda dfout: len(dfout)).reset_index()
+    dfC2 = dfC2.rename(columns={0: '通用名N转换比数'})
+    dfC3 = dfB.groupby(['通用名N', '剂型N']).apply(lambda dfout: len(dfout)).reset_index()
+    dfC3 = dfC3.rename(columns={0: '通用名N剂型数'})
+    dfC4 = dfB.groupby(['转换比N']).apply(lambda dfout: len(dfout)).reset_index()
+    dfC4 = dfC4.rename(columns={0: '转换比数'})
+    dfD = pd.merge(pd.merge(pd.merge(dfC, dfC2), dfC3), dfC4)
+    dfE = dfD.loc[~((((dfD['通用名N转换比数'] / dfD['通用名N剂型数']) < 0.04) & ((dfD['转换比数']) < 500)) | ((dfD['转换比数']) < 200) | ((dfD['转换比N']) > 2000))]
+    dfM = getdfM(dfA)
+    dfT = getdfT(dfA)
+    dfE = pd.merge(dfE,dfT,on=['flag','剂型N','通用名N','规格N'],how='left')
+    dfE['价格'] = dfE['单位价格']*dfE['转换比N']
+    return dfE,dfM,dfT
+
+def getdfM(dfA):
+    '''
+    dfA为中标数据总表
+    发现价格异常用对照表
+    '''
+    dfA['年'] = dfA['发布时间'].dt.year
+    dfM = dfA[['生产企业N', '通用名N', '剂型N', '规格N', '单位价格','年']].groupby(['生产企业N', '通用名N', '剂型N', '规格N','年']).median()
+    dfM = dfM.reset_index()
+    dfM = dfM.loc[pd.isnull(dfM['单位价格'])==False]
+    dfM = dfM.sort_values(by='年',ascending=False).drop_duplicates(['生产企业N','通用名N','剂型N','规格N'])
+    dfM = dfM.rename(columns={'单位价格': '价格中值'})
+    return dfM
+
+def getdfT(dfA):
+    '''
+    dfA为中标数据总表
+    清洗单位价格对照表
+    '''
+    dfA['年'] = dfA['年'] = dfA['发布时间'].dt.year
+    dfA =dfA[['flag','剂型N', '年','通用名N','规格N','单位价格']].groupby(['flag','剂型N', '年','通用名N','规格N']).median().reset_index()
+    dfA = dfA.dropna().drop_duplicates()
+    dfT = dfA.sort_values(by='年',ascending=False).drop_duplicates(['flag','剂型N','通用名N','规格N'])
+    return dfT
+print('读取企业异名字典')
+# pd_datamate = pd.read_sql_table(table_name='企业异名字典',con=engine_azure,schema='dbo') # 企业异名
+pd_datamate = pd.read_pickle('E:/中标数据清洗代码/cache/pd_datamate.pkl')
+print('读取成分名异名字典')
+# pd_datamate2 = pd.read_sql_table(table_name='成分名异名字典',con=engine_azure,schema='dbo')# 成分异名
+pd_datamate2 = pd.read_pickle('E:/中标数据清洗代码/cache/pd_datamate2.pkl')
+print('成分名企业合法性信息')
+# pd_cfmqy = pd.read_sql_table(table_name='成分名企业合法性',con=engine_azure,schema='dbo')#成分名企业合法性
+pd_cfmqy = pd.read_pickle('E:/中标数据清洗代码/cache/pd_cfmqy.pkl')
+print('初始成分名相似表')
+# pd_cfmxs = pd.read_sql_table(table_name='成分名相似',con=engine_azure,schema='dbo')# 成分相似
+pd_cfmxs = pd.read_pickle('E:/中标数据清洗代码/cache/pd_cfmxs.pkl')
+print('读取上市药品库信息')
+# pd_datamate3 = pd.read_sql_table(table_name='中国上市药品',con=engine_azure,schema='dbo')#信息全库
+pd_datamate3 = pd.read_pickle('E:/中标数据清洗代码/cache/pd_datamate3.pkl')
+print('初始化药品信息全表')
+pd_datamate3 = 初始化药品信息全表(pd_datamate3)
+pd_datamate3['药品索引'] = pd_datamate3['药品索引'].apply(str)
+print('初始化药品信息全表完成')
+print('读取其他信息')
+dfEgobal = pd.read_pickle('E:/中标数据清洗代码/cache/dfEgobal.pkl')
+dfMgobal = pd.read_pickle('E:/中标数据清洗代码/cache/dfMgobal.pkl')
+dfTgobal = pd.read_pickle('E:/中标数据清洗代码/cache/dfTgobal.pkl')
+# with open(r'C:\Users\jiyan\Documents\工作\中标数据\汇总输出.csv','r',encoding='utf-8') as f:
+#     dfA = pd.read_csv(f)  # 待合并文件1
+# with open(r'‪C:\Users\jiyan\Documents\工作\中标数据\2019-4\中标信息汇总4-18-4-30.csv','r',encoding='utf-8') as f:
+#     dfB = pd.read_csv(f)  # 待合并文件2
+# dfA = dfA[['价格', '价格标识', '剂型', '单位', '发布时间', '地区', '投标企业', '文件名',
+#            '生产企业', '索引', '规格', '质量层次', '转换比', '通用名', '项目名称','价格状态']]
+# dfC = 文件合并(dfA, dfB)  # 文件合并
+# 企业名称匹配(dfC, '生产企业')  # 企业名称匹配
+# dfC = 企业名称清洗(dfC, 待审核企业异名地址,'生产企业')  # 企业名称清洗
+# 药品名称匹配(dfC, '通用名')  # 药品名称匹配
+# dfC = 药品名称清洗(dfC, 待审核产品异名地址,'通用名')  # 药品名称清洗
+# dfC = 药品信息清洗(dfC, pd_datamate3)
+# dfC = 转换比清洗(dfC)  # 转换比清洗
+# dfC = 单位价格清洗(dfC)  # 单位价格清洗
+# dfAA = 发现价格异常(dfC)  # 第一次发现价格异常
+# dfC = 根据异常价格清洗转换比(dfC, dfAA)
+# dfC = 单位价格清洗(dfC)  # 修正转换比后再次单位价格清洗
+# dfC = 修正价格异常(dfC)  # 修正异常价格
+# dfC = 补充缺失价格(dfC)
+# dfC = 其他调整(dfC)
+# dfC.to_csv(r'C:\Users\jiyan\Documents\工作\中标数据\汇总输出2.csv', index=False, encoding='utf-8')  # 文件输出
+# print(r'全部结果输出至：C:\Users\jiyan\Documents\工作\中标数据\汇总输出2.csv')
+# print('Done！')
